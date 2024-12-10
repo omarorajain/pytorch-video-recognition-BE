@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 from mypath import Path
-import random
 
 
 class VideoDataset(Dataset):
@@ -73,27 +72,35 @@ class VideoDataset(Dataset):
     def __len__(self):
         return len(self.fnames)
 
-    def apply_background_erasing(self, video_frames, lambda_value=0.3):
-        static_frame = random.choice(video_frames)
-        distracting_video = []
-        for frame in video_frames:
-            mixed_frame = (1 - lambda_value) * frame + lambda_value * static_frame
-            distracting_video.append(mixed_frame)
-        return np.array(distracting_video)
-
     def __getitem__(self, index):
         # Loading and preprocessing.
-        buffer = self.load_frames(self.fnames[index])
-        buffer = self.crop(buffer, self.clip_len, self.crop_size)
-        buffer = self.apply_background_erasing(self, buffer)
+        video_dir = self.fnames[index]
+        original_frames = self.load_frames(video_dir, prefix='original')
+        noisy_frames = self.load_frames(video_dir, prefix='noisy')
+
+        original_frames = self.crop(original_frames, self.clip_len, self.crop_size)
+        noisy_frames = self.crop(noisy_frames, self.clip_len, self.crop_size)
+
         labels = np.array(self.label_array[index])
 
         if self.split == 'test':
             # Perform data augmentation
-            buffer = self.randomflip(buffer)
-        buffer = self.normalize(buffer)
-        buffer = self.to_tensor(buffer)
-        return torch.from_numpy(buffer), torch.from_numpy(labels)
+            original_frames = self.randomflip(original_frames)
+            noisy_frames = self.randomflip(noisy_frames)
+
+        original_frames = self.normalize(original_frames)
+        noisy_frames = self.normalize(noisy_frames)
+
+        original_frames = self.to_tensor(original_frames)
+        noisy_frames = self.to_tensor(noisy_frames)
+
+
+        return (
+            torch.from_numpy(original_frames), 
+            torch.from_numpy(noisy_frames), 
+            torch.from_numpy(labels)
+        )
+
 
     def check_integrity(self):
         if not os.path.exists(self.root_dir):
@@ -160,11 +167,24 @@ class VideoDataset(Dataset):
 
         print('Preprocessing finished.')
 
+    def generate_noisy_frames(self, original_frames, lambda_val = .3):
+        noisy_frames = []
+        random_idx = np.random.randint(len(original_frames))
+
+        for frame in original_frames:
+            noisy_frame = (1 - lambda_val) * frame + lambda_val * original_frames[random_idx]
+            noisy_frames.append(noisy_frame)
+
+        return noisy_frames
+
+
     def process_video(self, video, action_name, save_dir):
         # Initialize a VideoCapture object to read video data into a numpy array
         video_filename = video.split('.')[0]
-        if not os.path.exists(os.path.join(save_dir, video_filename)):
-            os.mkdir(os.path.join(save_dir, video_filename))
+        video_save_path = os.path.join(save_dir, video_filename)
+
+        if not os.path.exists(video_save_path):
+            os.mkdir(video_save_path)
 
         capture = cv2.VideoCapture(os.path.join(self.root_dir, action_name, video))
 
@@ -185,6 +205,7 @@ class VideoDataset(Dataset):
         i = 0
         retaining = True
 
+        original_frames = []
         while (count < frame_count and retaining):
             retaining, frame = capture.read()
             if frame is None:
@@ -193,9 +214,17 @@ class VideoDataset(Dataset):
             if count % EXTRACT_FREQUENCY == 0:
                 if (frame_height != self.resize_height) or (frame_width != self.resize_width):
                     frame = cv2.resize(frame, (self.resize_width, self.resize_height))
-                cv2.imwrite(filename=os.path.join(save_dir, video_filename, '0000{}.jpg'.format(str(i))), img=frame)
+
+                original_frames.append(frame)
+                cv2.imwrite(filename=os.path.join(video_save_path, f'original_0000{i}.jpg'), img=frame)
                 i += 1
             count += 1
+
+        # Generate noisy frames using random distracting frame
+        noisy_frames = self.generate_noisy_frames(original_frames)
+
+        for i, frame in enumerate(noisy_frames):
+            cv2.imwrite(filename=os.path.join(video_save_path, f'noisy_0000{i}.jpg'), img=frame)
 
         # Release the VideoCapture once it is no longer needed
         capture.release()
@@ -221,8 +250,8 @@ class VideoDataset(Dataset):
     def to_tensor(self, buffer):
         return buffer.transpose((3, 0, 1, 2))
 
-    def load_frames(self, file_dir):
-        frames = sorted([os.path.join(file_dir, img) for img in os.listdir(file_dir)])
+    def load_frames(self, file_dir, prefix="original"):
+        frames = sorted([os.path.join(file_dir, img) for img in os.listdir(file_dir) if prefix in img])
         frame_count = len(frames)
         buffer = np.empty((frame_count, self.resize_height, self.resize_width, 3), np.dtype('float32'))
         for i, frame_name in enumerate(frames):
@@ -255,7 +284,7 @@ class VideoDataset(Dataset):
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
     train_data = VideoDataset(dataset='ucf101', split='test', clip_len=8, preprocess=False)
-    train_loader = DataLoader(train_data, batch_size=100, shuffle=True, num_workers=1)
+    train_loader = DataLoader(train_data, batch_size=100, shuffle=True, num_workers=2)
 
     for i, sample in enumerate(train_loader):
         inputs = sample[0]
