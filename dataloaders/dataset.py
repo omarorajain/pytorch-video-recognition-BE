@@ -72,10 +72,19 @@ class VideoDataset(Dataset):
     def __len__(self):
         return len(self.fnames)
 
+    def apply_background_erasing(self, video_frames, lambda_value=0.3):
+        static_frame = random.choice(video_frames)
+        distracting_video = []
+        for frame in video_frames:
+            mixed_frame = (1 - lambda_value) * frame + lambda_value * static_frame
+            distracting_video.append(mixed_frame)
+        return np.array(distracting_video)
+
     def __getitem__(self, index):
         # Loading and preprocessing.
         buffer = self.load_frames(self.fnames[index])
         buffer = self.crop(buffer, self.clip_len, self.crop_size)
+        buffer = self.apply_background_erasing(self, buffer)
         labels = np.array(self.label_array[index])
 
         if self.split == 'test':

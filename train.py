@@ -49,6 +49,19 @@ save_dir = os.path.join(save_dir_root, 'run', 'run_' + str(run_id))
 modelName = 'C3D' # Options: C3D or R2Plus1D or R3D
 saveName = modelName + '-' + dataset
 
+def apply_background_erasing(video_frames, lambda_value=0.3):
+    """
+    Apply BE by blending each frame with a randomly selected static frame.
+    Args:
+        video_frames (torch.Tensor): Tensor of video frames [B, C, T, H, W].
+        lambda_value (float): Weight for blending the static frame.
+    Returns:
+        torch.Tensor: Distracting video frames.
+    """
+    static_frame = video_frames[:, :, 0:1, :, :]  # Use the first frame as static
+    distracting_video = (1 - lambda_value) * video_frames + lambda_value * static_frame
+    return distracting_video
+
 def train_model(dataset=dataset, save_dir=save_dir, num_classes=num_classes, lr=lr,
                 num_epochs=nEpochs, save_epoch=snapshot, useTest=useTest, test_interval=nTestInterval):
     """
@@ -124,17 +137,24 @@ def train_model(dataset=dataset, save_dir=save_dir, num_classes=num_classes, lr=
                 # move inputs and labels to the device the training is taking place on
                 inputs = Variable(inputs, requires_grad=True).to(device)
                 labels = Variable(labels).to(device)
+                # Generate distracting video using BE
+                distracting_inputs = apply_background_erasing(inputs)  # Ensure this method is defined
+                distracting_inputs = Variable(distracting_inputs, requires_grad=True).to(device)
                 optimizer.zero_grad()
 
                 if phase == 'train':
                     outputs = model(inputs)
+                    outputs_distracting = model(distracting_inputs)
                 else:
                     with torch.no_grad():
                         outputs = model(inputs)
+                        outputs_distracting = model(distracting_inputs)
 
                 probs = nn.Softmax(dim=1)(outputs)
                 preds = torch.max(probs, 1)[1]
-                loss = criterion(outputs, labels)
+                loss_original = criterion(outputs, labels)
+                consistency_loss = nn.MSELoss()(outputs, outputs_distracting)
+                loss = loss_original + consistency_loss
 
                 if phase == 'train':
                     loss.backward()
