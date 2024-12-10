@@ -167,7 +167,7 @@ class VideoDataset(Dataset):
 
         print('Preprocessing finished.')
 
-    def generate_noisy_frames(self, original_frames, lambda_val = .3):
+    def generate_noisy_frames(self, original_frames, lambda_val = .1):
         noisy_frames = []
         random_idx = np.random.randint(len(original_frames))
 
